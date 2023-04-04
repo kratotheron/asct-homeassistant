@@ -1,17 +1,37 @@
+from datetime import datetime
 import time
 
 from requests import get, post
 import json
 import logging
 
-base_url = "http://192.168.95.229:8123/api/"
+import sys
 
-# Corrente massima che voglio dare alla macchina
-min_current = 3
+if len(sys.argv) < 2:
+    print("You need at least 2 arguments!")
+    print("\t1. The Home Assistant Url (http://homeassistant.local:8123/api/)")
+    print("\t2. The token for the authorization")
+    exit(1)
+base_url = str(sys.argv[1])
+print(base_url)
+
+# Max current
 max_current = 6
+# Max night current
+max_night_current = 10
+# Start of the night
+start_night = 0
+# End of the night
+end_night = 7
+# Seconds to wait before raising the current again
+seconds_to_wait = 10
+# Max wattage while charging (House + Tesla)
 stop_limit = 2800
 
-token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiI4MjM2N2UzNWRmNDA0Y2EzODdkYjkzYWY3NWQ1MDI3MiIsImlhdCI6MTY3OTUyMDk4MiwiZXhwIjoxOTk0ODgwOTgyfQ.qtaJjo3WURUuxk5jYzJ6Bbg9MhNOmGnYDT4eKHry6Fk"
+token = str(sys.argv[2])
+
+print(token)
+
 headers = {
     "Authorization": "Bearer " + token,
     "content-type": "application/json",
@@ -48,7 +68,7 @@ def api_working() -> bool:
         if response.status_code != 200:
             return False
     except Exception as e:
-        logging.error(f"Errore durante il controllo delle API {e}")
+        logging.error(f"Error while checking the API {e}")
         return False
     return True
 
@@ -111,35 +131,36 @@ def is_at_home() -> bool:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger()
+    last_subtract = 0
     while True:
         time.sleep(1)
         if not api_working():
-            logger.debug("API not working")
+            logger.error("API not working")
             continue
         logger.debug("API working")
         current_consumption = get_current_consumption()
+        logger.info(f"Current consumption {current_consumption} W")
+        if not is_at_home():
+            logger.info("Tesla not at home...")
+            time.sleep(60)
+            continue
         if is_charging():
             if current_consumption >= stop_limit:
                 new_charging_current = get_charging_current() - 1
-                if new_charging_current < min_current:
-                    turn_off_charging()
-                    time.sleep(60)
-                else:
-                    set_charging_current(new_charging_current)
-                    time.sleep(2)
+                set_charging_current(new_charging_current)
+                last_subtract = time.time()
             else:
-                new_charging_current = min(get_charging_current() + 1, max_current)
-                if new_charging_current != get_charging_current():
-                    set_charging_current(new_charging_current)
-                    time.sleep(2)
+                if (time.time() - last_subtract) > seconds_to_wait:
+                    new_charging_current = 0
+                    if start_night <= datetime.now().hour <= end_night:
+                        new_charging_current = min(get_charging_current() + 1, max_night_current)
+                    else:
+                        new_charging_current = min(get_charging_current() + 1, max_current)
+                    if new_charging_current != get_charging_current():
+                        set_charging_current(new_charging_current)
         else:
-            if not is_at_home():
-                time.sleep(60)
-                continue
-
-            if current_consumption < stop_limit:
+            logger.debug("Not charging")
+            time.sleep(2)
+            if start_night <= datetime.now().hour <= end_night:
+                logger.info("Starting night charging")
                 turn_on_charging()
-
-
-
-
